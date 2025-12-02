@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+qengine = "0e0b8199-541e-421d-a98f-9f18eb2392e1"
+
+[sources]
+qengine = {path = ".."}
