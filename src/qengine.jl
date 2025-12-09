@@ -1927,7 +1927,9 @@ function write_job(orderlistch::Channel{Dict{String,Vector}})
         end
         ordertrace_orderlist = take!(orderlistch)
     end
-    dolphindb.ddb_close_all()
+    if save_mode == 4
+        dolphindb.ddb_close_all()
+    end
     write(io, string(Dates.now()," : ",myid()," data collection end. count:",i,"\n"))
     close(io)
 end
