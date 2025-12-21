@@ -206,6 +206,936 @@ struct lftmatch
 end
 export lftmatch
 
+#═══════════════════════════════════════════════════════════
+# BarBuilder：流式 bar 构建器
+#═══════════════════════════════════════════════════════════
+
+"""
+流式 bar 构建器，支持逐 tick 喂入，自动聚合生成低频数据
+
+类型参数：
+- P: 生成函数所需的状态类型（如 dataparam）
+
+示例：
+    bb = BarBuilder(generatekline_night, dataparam())
+    for tick in tick_stream
+        out = feed_tick!(bb, tradeday, symbol, nowdt, tick)
+        if out !== nothing
+            bar, match = out
+            # 处理生成的 bar
+        end
+    end
+"""
+mutable struct BarBuilder{P}
+    state::P                          # 生成函数所需状态（如 dataparam）
+    high::Dict{String,Int64}          # 当前 bar 内每个 symbol 的最高价
+    low::Dict{String,Int64}           # 当前 bar 内每个 symbol 的最低价
+    generate::Function                # (tradeday, symbol, nowdt, tick, state) -> Union{bar,Nothing}
+end
+
+"""
+构造函数
+
+参数：
+- generate: K线生成函数（generatekline_night / generateTline_night / 自定义）
+- state_instance: 生成函数所需状态实例（如 dataparam()）
+
+示例：
+    bb = BarBuilder(generatekline_night, dataparam())
+"""
+function BarBuilder(generate::Function, state_instance::P) where {P}
+    BarBuilder{P}(
+        state_instance,
+        Dict{String,Int64}(),
+        Dict{String,Int64}(),
+        generate
+    )
+end
+
+export BarBuilder
+
+"""
+feed_tick!(bb::BarBuilder, tradeday::Int, symbol::String, nowdt::NTuple{2,Int}, tick)
+
+逐 tick 喂入数据，自动维护 high/low 并调用生成函数
+
+根据 tick 类型自动派发：
+- FuturesTick: 调用 generate(tradeday, symbol, nowdt, tick, state)
+- SecurityTick: 调用 generate(symbol, nowdt, tick, state)
+- 未来可扩展更多类型
+
+内置功能：
+1. **时间过滤**：自动过滤时间偏差过大的 tick
+   - 期货：夜盘允许最大偏差 3600秒，日盘允许最大偏差 180秒
+   - 证券：只有日盘，允许最大偏差 180秒
+2. **high/low 维护**：自动跟踪当前 bar 内的最高/最低价
+3. **bar 生成**：调用用户提供的生成函数
+4. **撮合信息**：自动构造 lftmatch 结构
+
+参数：
+- bb: BarBuilder 实例
+- tradeday: 交易日（yyyymmdd 格式）
+- symbol: 合约代码
+- nowdt: (date_int, time_int) 时间戳
+- tick: FuturesTick 或 SecurityTick
+
+返回：
+- nothing: 当前 tick 被过滤或未触发 bar 结束
+- (bar, lftmatch): 生成的 bar 和撮合信息
+
+示例：
+    # 期货
+    out = feed_tick!(bb, 20250101, "SHFE.rb2505", (20250101, 93015000), futures_tick)
+    if out !== nothing
+        bar, match = out
+        # 处理生成的 bar
+    end
+    
+    # 证券
+    out = feed_tick!(bb, 20250101, "SH.600000", (20250101, 93015000), security_tick)
+"""
+# 期货版本：调用5参数生成函数
+function feed_tick!(bb::BarBuilder, tradeday::Int, symbol::String, 
+                    nowdt::NTuple{2,Int}, tick::FuturesTick)
+    # 1) 时间过滤：检查 tick 时间与系统时间的偏差
+    dt = CTime(nowdt[2], tick.time)
+    if 210000000 > nowdt[2] > 150000000
+        # 夜盘时间段：允许最大偏差 3600 秒
+        if abs(dt) > 3600
+            return nothing
+        end
+    else
+        # 日盘时间段：允许最大偏差 180 秒
+        if abs(dt) > 60*3
+            return nothing
+        end
+    end
+    
+    # 2) 更新 high/low（仅当 tick.match != 0 时）
+    if tick.match != 0
+        if symbol in keys(bb.high)
+            bb.high[symbol] = max(tick.match, bb.high[symbol])
+            bb.low[symbol] = min(tick.match, bb.low[symbol])
+        else
+            bb.high[symbol] = tick.match
+            bb.low[symbol] = tick.match
+        end
+    end
+    
+    # 3) 调用期货生成函数（5参数）
+    bar = bb.generate(tradeday, symbol, nowdt, tick, bb.state)
+    
+    if isnothing(bar)
+        return nothing
+    end
+    
+    # 4) 构造 lftmatch
+    match = lftmatch(
+        bb.high[symbol],
+        bb.low[symbol],
+        tick.ask_price[1],
+        tick.ask_vol[1],
+        tick.bid_price[1],
+        tick.bid_vol[1]
+    )
+    
+    # 5) 清除 high/low 状态
+    pop!(bb.high, symbol)
+    pop!(bb.low, symbol)
+    
+    return (bar, match)
+end
+
+# 证券版本：调用4参数生成函数
+function feed_tick!(bb::BarBuilder, tradeday::Int, symbol::String, 
+                    nowdt::NTuple{2,Int}, tick::SecurityTick)
+    # 1) 时间过滤：检查 tick 时间与系统时间的偏差
+    # 证券交易只有日盘，允许最大偏差 180 秒
+    dt = CTime(nowdt[2], tick.time)
+    if abs(dt) > 60*3
+        return nothing
+    end
+    
+    # 2) 更新 high/low（仅当 tick.match != 0 时）
+    if tick.match != 0
+        if symbol in keys(bb.high)
+            bb.high[symbol] = max(tick.match, bb.high[symbol])
+            bb.low[symbol] = min(tick.match, bb.low[symbol])
+        else
+            bb.high[symbol] = tick.match
+            bb.low[symbol] = tick.match
+        end
+    end
+    
+    # 3) 调用证券生成函数（4参数）
+    bar = bb.generate(symbol, nowdt, tick, bb.state)
+    
+    if isnothing(bar)
+        return nothing
+    end
+    
+    # 4) 构造 lftmatch
+    match = lftmatch(
+        bb.high[symbol],
+        bb.low[symbol],
+        tick.ask_price[1],
+        tick.ask_vol[1],
+        tick.bid_price[1],
+        tick.bid_vol[1]
+    )
+    
+    # 5) 清除 high/low 状态
+    pop!(bb.high, symbol)
+    pop!(bb.low, symbol)
+    
+    return (bar, match)
+end
+
+# 未来可轻松扩展其他类型，例如加密货币：
+# function feed_tick!(bb::BarBuilder, tradeday::Int, symbol::String, 
+#                     nowdt::NTuple{2,Int}, tick::CryptoTick)
+#     if tick.match != 0
+#         if symbol in keys(bb.high)
+#             bb.high[symbol] = max(tick.match, bb.high[symbol])
+#             bb.low[symbol] = min(tick.match, bb.low[symbol])
+#         else
+#             bb.high[symbol] = tick.match
+#             bb.low[symbol] = tick.match
+#         end
+#     end
+#     
+#     # 调用加密货币生成函数（6参数，可能需要额外参数）
+#     exchange = get_exchange(symbol)
+#     fee_rate = get_fee_rate(exchange)
+#     bar = bb.generate(exchange, symbol, nowdt, tick, fee_rate, bb.state)
+#     
+#     if bar === nothing
+#         return nothing
+#     end
+#     
+#     match = lftmatch(
+#         bb.high[symbol], bb.low[symbol],
+#         tick.ask_price[1], tick.ask_vol[1],
+#         tick.bid_price[1], tick.bid_vol[1]
+#     )
+#     
+#     pop!(bb.high, symbol)
+#     pop!(bb.low, symbol)
+#     
+#     return (bar, match)
+# end
+
+export feed_tick!
+
+#═══════════════════════════════════════════════════════════
+# 在线模拟定时器状态
+#═══════════════════════════════════════════════════════════
+
+# OnlineTimerState 已移除
+# 理由：
+# 1. current_tradeday 可直接使用 sys_data.ordertrace_tradeday 替代
+# 2. 真实时间严格递增，无需 last_triggered_time 去重
+# 3. 减少冗余状态，简化设计
+
+#═══════════════════════════════════════════════════════════
+# 事件驱动接口：新交易日初始化
+#═══════════════════════════════════════════════════════════
+
+"""
+strategy_on_new_day!(sys_data, date, margin_ratio, price_tick, multiplier, settleprice, major_codes)
+
+新交易日开始：初始化合约参数、重置日内调度（离线回测版本）
+
+用于离线回测，从 *2d 数组传入参数。
+
+参数：
+- sys_data: 策略状态
+- date: 交易日
+- margin_ratio: 保证金率字典（从 margin_ratio2d[i] 获取）
+- price_tick: 最小变动价位字典（从 price_tick2d[i] 获取）
+- multiplier: 合约乘数字典（从 multiplier2d[i] 获取）
+- settleprice: 结算价字典（从 settleprice2d[i] 获取）
+- major_codes: 主力合约列表（从 major_codes2d[i] 获取）
+
+示例（在 run_with_params 中调用）：
+    strategy_on_new_day!(sys_data, date, margin_ratio2d[i], 
+                        price_tick2d[i], multiplier2d[i], 
+                        settleprice2d[i], major_codes2d[i])
+"""
+function strategy_on_new_day!(
+    sys_data::sysparam,
+    date::Int,
+    margin_ratio::Dict{String,NTuple{2,Integer}},
+    price_tick::Dict{String,Integer},
+    multiplier::Dict{String,Integer},
+    settleprice::Dict{String,Integer},
+    major_codes::Vector{String}
+)
+    ordertrace_init!(sys_data, margin_ratio, price_tick, multiplier, settleprice, major_codes, date)
+    return nothing
+end
+
+export strategy_on_new_day!
+
+#═══════════════════════════════════════════════════════════
+# 事件驱动接口：交易日结束
+#═══════════════════════════════════════════════════════════
+
+"""
+strategy_on_day_end!(sys_data, date)
+
+交易日结束：执行结算、清理日内状态
+
+会调用 ordertrace_reset 进行日终结算。
+
+参数：
+- sys_data: 策略状态
+- date: 交易日
+
+示例：
+    strategy_on_day_end!(sys_data, 20250101)
+"""
+function strategy_on_day_end!(sys_data::sysparam, date::Int)
+    ordertrace_reset(sys_data, date)
+    return nothing
+end
+
+export strategy_on_day_end!
+
+#═══════════════════════════════════════════════════════════
+# 在线模拟数据结构
+#═══════════════════════════════════════════════════════════
+
+# 全局 BarBuilder 实例（所有策略实例共享）
+const GLOBAL_BAR_BUILDER = Ref{Union{BarBuilder,Nothing}}(nothing)
+
+"""
+OnlineSimulation{T}
+
+在线模拟多实例容器
+
+封装了多个策略实例所需的共享和独立资源
+
+字段：
+- bb: BarBuilder实例（所有实例共享）
+- instances: Vector{T}，每个元素是一个策略实例
+  - 每个 external_data 显式包含其对应的 sys_data
+  - 与离线回测的设计完全一致
+- timer_state: 已移除（使用 sys_data.ordertrace_tradeday 代替）
+
+设计理念：
+- 与离线回测的 run_with_params 中的逻辑一致
+- 离线：for i in eachindex(dates); for j in eachindex(symbols); ...
+- 在线：for instance in instances; 处理 bar; ...
+- 核心逻辑100%复用！
+
+示例：
+    simulation = init_online_simulation_multi([
+        ("MA_Strategy", "20_10"),
+        ("EMA_Strategy", "30_15")
+    ])
+    
+    # simulation.bb 是共享的
+    # simulation.instances 是独立的实例数组
+    # simulation.timer_state 已移除
+"""
+struct OnlineSimulation{T}
+    bb::BarBuilder                  # 共享的 BarBuilder
+    instances::Vector{T}            # 策略实例列表
+end
+
+export OnlineSimulation
+
+#═══════════════════════════════════════════════════════════
+# 在线模拟初始化函数
+#═══════════════════════════════════════════════════════════
+
+"""init_online_simulation(; linetype="minkline", instrument="future")
+
+初始化在线模拟环境（创建全局共享的 BarBuilder）
+
+参数：
+- linetype: K线类型，可选 "minkline"（默认，1分钟K线）或 "tline"（T线）
+- instrument: 标的类型，默认"future"（期货），可选"future"、"security"（证券）
+
+返回：
+- bb: BarBuilder 实例（全局共享单例）
+
+注意：
+- 用户需要自己创建 external_data（包含 sys_data 和策略特定字段）
+- external_data 必须包含 sys_data 字段
+- sys_data 通过 sysparam(strategy_name, params) 创建
+- 用户需要在 external_data 上实现 4 个方法（duck typing）：
+  - get_margin_ratio(external_data, tradeday)
+  - get_price_tick(external_data, tradeday)
+  - get_multiplier(external_data, tradeday)
+  - get_major_codes(external_data, tradeday)
+
+使用示例（参考 docs/strategy10.jl）：
+    # 1. 初始化全局 BarBuilder
+    bb = init_online_simulation(linetype="minkline", instrument="future")
+    
+    # 2. 用户创建自己的 external_data（包含策略特定字段）
+    external_data = strategy_param(
+        "EMA_FUTURE",           # strategy_name
+        "20_10_5",              # params
+        ["SHFE.au"],            # products
+        20,                      # long
+        10,                      # short
+        5                        # period
+    )
+    # strategy_param 内部会创建 sys_data = sysparam(strategy_name, params)
+    
+    # 3. 在主循环中使用
+    while running
+        on_time_heartbeat(tradeday, current_time, external_data)
+        sleep(1)
+    end
+    
+    for tick in market_stream
+        on_md_tick(tradeday, symbol, nowdt, tick, bb, external_data)
+    end
+
+多实例场景：
+    # 1. 初始化全局资源
+    bb = init_online_simulation()
+    
+    # 2. 创建多个策略实例
+    instance1 = strategy_param("EMA_FUTURE", "20_10_5", ["SHFE.au"], 20, 10, 5)
+    instance2 = strategy_param("EMA_FUTURE", "30_15_3", ["SHFE.ag"], 30, 15, 3)
+    
+    # 3. 使用（共享 bb，独立 external_data）
+    for tick in market_stream
+        on_md_tick(tradeday, symbol, nowdt, tick, instance1)
+        on_md_tick(tradeday, symbol, nowdt, tick, instance2)
+    end
+"""
+function init_online_simulation(;
+    linetype::String="minkline",
+    instrument::String="future"
+)
+    # 1. 获取或创建全局 BarBuilder（所有实例共享）
+    if GLOBAL_BAR_BUILDER[] === nothing
+        if instrument == "future"
+            if linetype == "minkline"
+                GLOBAL_BAR_BUILDER[] = BarBuilder(generatekline_night, dataparam())
+            elseif linetype == "tline"
+                GLOBAL_BAR_BUILDER[] = BarBuilder(generateTline_night, dataparam())
+            else
+                error("期货不支持的线型: $linetype, 可选: minkline, tline")
+            end
+        elseif instrument == "security"
+            if linetype == "minkline"
+                GLOBAL_BAR_BUILDER[] = BarBuilder(generatekline, dataparam())
+            else
+                error("证券目前仅支持 linetype=\"minkline\"")
+            end
+        else
+            error("不支持的标的类型: $instrument, 可选: future, security")
+        end
+        @info "创建全局 BarBuilder (linetype=$linetype, instrument=$instrument)，所有策略实例将共享此实例"
+    end
+    bb = GLOBAL_BAR_BUILDER[]
+    
+    return bb
+end
+
+"""
+reset_global_barbuilder!()
+
+重置全局 BarBuilder 实例（用于切换 linetype 或重新开始模拟）
+
+使用场景：
+- 需要切换 K线类型（minkline ↔ tline）
+- 需要切换标的类型（future ↔ security）
+- 重新开始新的模拟会话
+
+示例：
+    # 第一次使用 minkline
+    bb = init_online_simulation(linetype="minkline")
+    
+    # 切换到 tline 前先重置
+    reset_global_barbuilder!()
+    bb = init_online_simulation(linetype="tline")
+    
+    # 从期货切换到证券
+    reset_global_barbuilder!()
+    bb = init_online_simulation(instrument="security")
+"""
+function reset_global_barbuilder!()
+    GLOBAL_BAR_BUILDER[] = nothing
+    @info "已重置全局 BarBuilder"
+end
+
+export init_online_simulation, reset_global_barbuilder!
+
+#═══════════════════════════════════════════════════════════
+# 在线模拟示例代码（用户项目中实现）
+#═══════════════════════════════════════════════════════════
+
+"""
+在线模拟时间心跳回调
+
+功能：
+- 跨日检测（唯一权威的时间源）
+- 执行日终结算（strategy_on_day_end!）
+- 执行新日初始化（strategy_on_new_day!）
+- 触发定时任务（on_day_schedule_task）
+
+参数：
+- tradeday: 当前交易日（yyyymmdd）
+- current_time: 当前时间（HHMMSS格式，如 143000 表示 14:30:00）
+- external_data: 外部数据（用户自定义类型）
+- margin_ratio: (可选) 保证金率字典，如果不传则调用 get_margin_ratio 方法获取
+- price_tick: (可选) 最小变动价位字典，如果不传则调用 get_price_tick 方法获取  
+- multiplier: (可选) 合约乘数字典，如果不传则调用 get_multiplier 方法获取
+- major_codes: (可选) 主力合约列表，如果不传则调用 get_major_codes 方法获取
+
+使用方式1：传入参数（推荐，适合已有参数的场景）
+    # 用户在开盘前获取参数（一天一次）
+    daily_margin_ratio = fetch_margin_ratio_from_db(tradeday)
+    daily_price_tick = fetch_price_tick_from_db(tradeday)
+    daily_multiplier = fetch_multiplier_from_db(tradeday)
+    daily_major_codes = fetch_major_codes_from_db(tradeday)
+    
+    # 主循环中直接传入
+    while running
+        on_time_heartbeat(
+            get_current_tradeday(),
+            get_current_hhmmss(),
+            my_data,
+            margin_ratio = daily_margin_ratio,
+            price_tick = daily_price_tick,
+            multiplier = daily_multiplier,
+            major_codes = daily_major_codes
+        )
+        sleep(1)
+    end
+
+使用方式2：不传参数（向后兼容，需实现4个方法）
+    # 用户实现4个方法
+    function get_margin_ratio(sp::MyStrategy, tradeday::Int)
+        return Dict("SHFE.au" => (12, 12))
+    end
+    # ... 其他3个方法
+    
+    # 主循环中调用（自动调用方法获取参数）
+    while running
+        on_time_heartbeat(
+            get_current_tradeday(),
+            get_current_hhmmss(),
+            my_data  # qengine会自动调用4个方法
+        )
+        sleep(1)
+    end
+
+注意：
+- settleprice 始终从 tick 数据自动提取，无需传入
+- 这4个参数一天只在开盘前更新一次，盘中不变
+- 所有实例共享同一套参数
+"""
+# on_time_heartbeat 由 qengine 实现并导出，用户直接调用即可
+
+function on_time_heartbeat(
+    tradeday::Int,
+    current_time::Int,
+    external_data;
+    margin_ratio::Union{Dict,Nothing} = nothing,
+    price_tick::Union{Dict,Nothing} = nothing,
+    multiplier::Union{Dict,Nothing} = nothing,
+    major_codes::Union{Vector,Nothing} = nothing
+)
+    sys_data = external_data.sys_data
+
+    # 1) 跨日检测：使用 sys_data.ordertrace_tradeday 作为权威
+    if tradeday != sys_data.ordertrace_tradeday
+        # 1.1 上一交易日日终结算
+        if sys_data.ordertrace_tradeday != 0
+            strategy_on_day_end!(sys_data, sys_data.ordertrace_tradeday)
+        end
+
+        # 1.2 获取当日合约参数（优先使用传入参数，否则使用前一交易日的值）
+        _margin_ratio = isnothing(margin_ratio) ? sys_data.ordertrace_margin_ratio : margin_ratio
+        _price_tick   = isnothing(price_tick)   ? sys_data.ordertrace_price_tick   : price_tick
+        _multiplier   = isnothing(multiplier)   ? sys_data.ordertrace_multiplier   : multiplier
+        _major_codes  = isnothing(major_codes)  ? sys_data.ordertrace_major_codes  : major_codes
+
+        # 在线模式下，结算价由 tick 数据逐步填充，这里传入空字典
+        settleprice = Dict{String, Int}()
+
+        # 1.3 新交易日初始化（内部会设置 sys_data.ordertrace_tradeday = tradeday）
+        strategy_on_new_day!(
+            sys_data,
+            tradeday,
+            _margin_ratio,
+            _price_tick,
+            _multiplier,
+            settleprice,
+            _major_codes,
+        )
+    end
+
+    # 2) 定时任务触发：直接判断 current_time 是否在调度列表中
+    # 注意：真实时间严格递增，无需去重检查
+    if current_time in sys_data.day_schedule_times
+        global on_day_schedule_task
+        on_day_schedule_task(current_time, external_data)
+    end
+
+    return nothing
+end
+
+export on_time_heartbeat
+
+"""on_time_heartbeat_multi(tradeday, current_time, external_datas; kwargs...)
+
+时间心跳处理（多实例版本）
+
+集中管理所有实例的时间相关状态：跨日、日初/日终、定时任务
+
+参数:
+- tradeday: 当前交易日（yyyymmdd）
+- current_time: 当前时间（HHMMSS格式，如143000表示14:30:00）
+- external_datas: Vector，用户创建的 external_data 实例列表
+- margin_ratio: (可选) 保证金率字典，所有实例共享
+- price_tick: (可选) 最小变动价位字典，所有实例共享
+- multiplier: (可选) 合约乘数字典，所有实例共享
+- major_codes: (可选) 主力合约列表，所有实例共享
+
+逻辑流程：
+为每个实例调用 on_time_heartbeat，每个实例独立处理：
+1. 跨日检测
+   - strategy_on_day_end!（日终）
+   - 获取参数（优先使用传入参数，否则调用方法）
+   - strategy_on_new_day!（日初）
+2. 定时任务触发
+   - on_day_schedule_task
+
+用户示例（推荐）:
+    # 创建实例
+    instances = [
+        strategy_param("EMA_FUTURE", "20_10_5", ["SHFE.au"], 20, 10, 5),
+        strategy_param("MA_FUTURE", "30_15_3", ["SHFE.ag"], 30, 15, 3)
+    ]
+    
+    # 开盘前获取参数（一天一次）
+    daily_params = fetch_daily_params(tradeday)
+    
+    # 时间心跳任务
+    timer_task = @async begin
+        while running
+            on_time_heartbeat_multi(
+                get_current_tradeday(),
+                get_current_hhmmss(),
+                instances,
+                margin_ratio = daily_params.margin_ratio,
+                price_tick = daily_params.price_tick,
+                multiplier = daily_params.multiplier,
+                major_codes = daily_params.major_codes
+            )
+            sleep(1)
+        end
+    end
+"""
+function on_time_heartbeat_multi(
+    tradeday::Int,
+    current_time::Int,
+    external_datas::Vector;
+    margin_ratio::Union{Dict,Nothing} = nothing,
+    price_tick::Union{Dict,Nothing} = nothing,
+    multiplier::Union{Dict,Nothing} = nothing,
+    major_codes::Union{Vector,Nothing} = nothing
+)
+    # 为每个实例调用单实例版本的 on_time_heartbeat
+    # 注意：所有实例共享同一套参数
+    if length(external_datas) == 0
+        return  # 无实例，直接返回
+    end
+    
+    for instance in external_datas
+        on_time_heartbeat(
+            tradeday,
+            current_time,
+            instance,
+            margin_ratio = margin_ratio,
+            price_tick = price_tick,
+            multiplier = multiplier,
+            major_codes = major_codes
+        )
+    end
+    
+    return nothing
+end
+
+export on_time_heartbeat_multi
+
+"""
+在线模拟行情回调（使用示例）
+
+注意：这是示例代码，用户需要在自己的项目中实现。
+详细实现请参考 docs/REFACTOR_COMPLETE_PLAN.md 中的完整示例。
+
+功能：
+- tick → bar 转换
+- 策略回调（on_futures_tick）
+- 风控更新
+
+参数：
+- tradeday: 交易日
+- symbol: 合约代码
+- nowdt: (date_int, time_int) 当前时间
+- raw_tick: FuturesTick 或 SecurityTick
+- external_data: 外部数据（包含 sys_data 等）
+
+示例用法：
+    # 初始化全局 BarBuilder
+    init_online_simulation()
+    
+    # 在外部tick回调中调用（无需传入 bb）
+    function on_market_data(tradeday, symbol, nowdt, tick)
+        on_md_tick(tradeday, symbol, nowdt, tick, external_data)
+    end
+"""
+# on_md_tick 由用户实现，请参考 docs/REFACTOR_COMPLETE_PLAN.md
+# 注意：从 v3.0 起，qengine 同时提供了内置的 on_md_tick 实现，用户可直接调用。
+
+function on_md_tick(
+    tradeday::Int,
+    symbol::String,
+    nowdt::NTuple{2,Int},
+    raw_tick::FuturesTick,
+    external_data,
+)
+    sys_data = external_data.sys_data
+
+    # 1) 更新结算价（在线模式下从 tick.settle_price 提取）
+    # 注意：无论是否生成bar，只要tick中有结算价就立即更新
+    if raw_tick.settle_price > 0
+        sys_data.ordertrace_settleprice[symbol] = raw_tick.settle_price
+    end
+
+    # 2) 从全局获取 BarBuilder
+    bb = GLOBAL_BAR_BUILDER[]
+    if bb === nothing
+        @error "BarBuilder 未初始化，请先调用 init_online_simulation"
+        return nothing
+    end
+
+    # 3) tick → (bar, match)
+    out = feed_tick!(bb, tradeday, symbol, nowdt, raw_tick)
+    if out === nothing
+        return nothing
+    end
+    bar, match = out
+
+    # 4) 更新 last_tick（用于 td_order）并调用策略回调
+    sys_data.last_tick[symbol] = (match.ask_price, match.bid_price)
+
+    global on_futures_tick
+    on_futures_tick(tradeday, symbol, nowdt, bar, external_data)
+
+    # 5) 更新风控最差价
+    ordertrace_setworstprice!(sys_data, symbol, match.high, match.low)
+
+    return nothing
+end
+
+function on_md_tick(
+    tradeday::Int,
+    symbol::String,
+    nowdt::NTuple{2,Int},
+    raw_tick::SecurityTick,
+    external_data,
+)
+    sys_data = external_data.sys_data
+
+    # 1) 证券场景：使用成交价作为结算价
+    # 注意：无论是否生成bar，只要tick中有成交价就立即更新
+    if raw_tick.match > 0
+        sys_data.ordertrace_settleprice[symbol] = raw_tick.match
+    end
+
+    # 2) 从全局获取 BarBuilder
+    bb = GLOBAL_BAR_BUILDER[]
+    if bb === nothing
+        @error "BarBuilder 未初始化，请先调用 init_online_simulation"
+        return nothing
+    end
+
+    # 3) tick → (bar, match)
+    out = feed_tick!(bb, tradeday, symbol, nowdt, raw_tick)
+    if out === nothing
+        return nothing
+    end
+    bar, match = out
+
+    # 4) 更新 last_tick 并调用策略回调
+    sys_data.last_tick[symbol] = (match.ask_price, match.bid_price)
+
+    global on_futures_tick
+    on_futures_tick(tradeday, symbol, nowdt, bar, external_data)
+
+    # 5) 更新风控最差价
+    ordertrace_setworstprice!(sys_data, symbol, match.high, match.low)
+
+    return nothing
+end
+
+export on_md_tick
+
+"""on_md_tick_multi(tradeday, symbol, nowdt, tick, external_datas)
+
+行情tick处理（多实例版本）
+
+一次tick处理，自动分发到所有策略实例
+
+参数:
+- tradeday: 交易日
+- symbol: 合约/证券代码
+- nowdt: (date_int, time_int) 时间元组
+- tick: FuturesTick 或 SecurityTick（利用多重派发自动选择实现）
+- external_datas: Vector，用户创建的 external_data 实例列表
+
+逻辑流程（与离线回测一致）：
+1. 提前更新所有实例的结算价（无论是否生成bar）
+2. BarBuilder.feed_tick! （共享，只处理一次）
+3. for instance in external_datas:  # 与离线回测的 for 循环一致！
+     - sys_data = instance.sys_data  # 直接访问，零开销
+     - 更新撑合价
+     - on_futures_tick(tradeday, symbol, nowdt, bar, instance)
+     - ordertrace_setworstprice!
+
+用户示例:
+    # 创建实例
+    instances = [
+        strategy_param("EMA_FUTURE", "20_10_5", ["SHFE.au"], 20, 10, 5),
+        strategy_param("MA_FUTURE", "30_15_3", ["SHFE.ag"], 30, 15, 3)
+    ]
+    
+    # 行情处理（自动根据tick类型派发）
+    for tick_msg in market_stream
+        tick_data = parse_tick(tick_msg)
+        on_md_tick_multi(
+            tick_data.tradeday,
+            tick_data.symbol,
+            tick_data.nowdt,
+            tick_data.tick,  # 可以是 FuturesTick 或 SecurityTick
+            instances
+        )
+    end
+"""
+# 期货版本
+function on_md_tick_multi(
+    tradeday::Int,
+    symbol::String,
+    nowdt::NTuple{2,Int},
+    tick::FuturesTick,
+    external_datas::Vector
+)
+    # 1) 提前更新所有实例的结算价（无论是否生成bar）
+    if tick.settle_price > 0
+        for instance in external_datas
+            instance.sys_data.ordertrace_settleprice[symbol] = tick.settle_price
+        end
+    end
+    
+    # 2) 从全局获取 BarBuilder
+    bb = GLOBAL_BAR_BUILDER[]
+    if bb === nothing
+        @error "BarBuilder 未初始化，请先调用 init_online_simulation"
+        return
+    end
+    
+    # 3) tick → bar 转换（共享的 BarBuilder，只处理一次）
+    out = feed_tick!(bb, tradeday, symbol, nowdt, tick)
+    if out === nothing
+        return  # 当前tick未触发bar结束
+    end
+    bar, match = out
+    
+    # 4) 遍历所有策略实例处理bar（与离线回测的 for 循环完全一致）
+    for instance in external_datas
+        sys_data = instance.sys_data  # ✅ 直接访问，零开销
+        
+        # 防御性检查：确保交易日已初始化
+        if sys_data.ordertrace_tradeday != tradeday
+            @warn "等待交易日初始化" strategy=sys_data.strategy_name bar_tradeday=tradeday sys_tradeday=sys_data.ordertrace_tradeday
+            continue  # 跳过当前实例，继续处理下一个
+        end
+        
+        # 更新撑合价
+        sys_data.last_tick[symbol] = (match.ask_price, match.bid_price)
+        
+        # 调用策略回调
+        try
+            global on_futures_tick
+            on_futures_tick(tradeday, symbol, nowdt, bar, instance)
+            ordertrace_setworstprice!(sys_data, symbol, match.high, match.low)
+        catch e
+            @error "策略回调执行失败" strategy=sys_data.strategy_name symbol exception=(e, catch_backtrace())
+        end
+    end
+    
+    return nothing
+end
+
+# 证券版本
+function on_md_tick_multi(
+    tradeday::Int,
+    symbol::String,
+    nowdt::NTuple{2,Int},
+    tick::SecurityTick,
+    external_datas::Vector
+)
+    # 1) 提前更新所有实例的结算价（证券使用成交价）
+    if tick.match > 0
+        for instance in external_datas
+            instance.sys_data.ordertrace_settleprice[symbol] = tick.match
+        end
+    end
+    
+    # 2) 从全局获取 BarBuilder
+    bb = GLOBAL_BAR_BUILDER[]
+    if bb === nothing
+        @error "BarBuilder 未初始化，请先调用 init_online_simulation"
+        return
+    end
+    
+    # 3) tick → bar 转换（共享的 BarBuilder，只处理一次）
+    out = feed_tick!(bb, tradeday, symbol, nowdt, tick)
+    if out === nothing
+        return  # 当前tick未触发bar结束
+    end
+    bar, match = out
+    
+    # 4) 遍历所有策略实例处理bar（与离线回测的 for 循环完全一致）
+    for instance in external_datas
+        sys_data = instance.sys_data  # ✅ 直接访问，零开销
+        
+        # 防御性检查：确保交易日已初始化
+        if sys_data.ordertrace_tradeday != tradeday
+            @warn "等待交易日初始化" strategy=sys_data.strategy_name bar_tradeday=tradeday sys_tradeday=sys_data.ordertrace_tradeday
+            continue  # 跳过当前实例，继续处理下一个
+        end
+        
+        # 更新撑合价
+        sys_data.last_tick[symbol] = (match.ask_price, match.bid_price)
+        
+        # 调用策略回调
+        try
+            global on_futures_tick
+            on_futures_tick(tradeday, symbol, nowdt, bar, instance)
+            ordertrace_setworstprice!(sys_data, symbol, match.high, match.low)
+        catch e
+            @error "策略回调执行失败" strategy=sys_data.strategy_name symbol exception=(e, catch_backtrace())
+        end
+    end
+    
+    return nothing
+end
+
+export on_md_tick_multi
+
 mutable struct dataparam
     last_tradeday::Dict{String,Int}
     last_date::Dict{String,Int}
@@ -638,8 +1568,9 @@ function load_lftdata(dates::Vector{Date}, products_vec::Vector{Vector{String}},
         part_symbols = union(major_codes, pre_major_codes)
         part_symbols = union(part_symbols, codes)
         if length(part_symbols) != 0
-            high = Dict{String,Int}()
-            low = Dict{String,Int}()
+            # 使用 BarBuilder 代替原有的 high/low 维护逻辑
+            bb = BarBuilder(generate, param_type())
+            
             if length(filesi) > 2
                 file_id_night = hdb_open_file(db_id, filesi[1], flags)[1]
                 if mode == 1
@@ -654,43 +1585,24 @@ function load_lftdata(dates::Vector{Date}, products_vec::Vector{Vector{String}},
                 load_futureticks!(file_id, futureitems, futureticks, part_symbols, datei)
             end            
             psymbols = parse_symbols(futureitems)
-            globalvar = param_type()
             for j in eachindex(futureticks)
                 tick = futureticks[j]
                 symbol = psymbols[j]
                 nowdt = parse_datetime(futureitems[j])
-                dt = CTime(nowdt[2], tick.time)
-                if 210000000 > nowdt[2] > 150000000
-                    if abs(dt) > 3600
-                        continue
-                    end
-                else
-                    if abs(dt) > 60*3
-                        continue
-                    end                
-                end                 
+                
+                # 保存结算价
                 if tick.settle_price > 0
                     settleprice[symbol] = tick.settle_price
                 end
-                if tick.match != 0
-                    if symbol in keys(high)
-                        high[symbol] = max(tick.match, high[symbol])
-                        low[symbol] = min(tick.match, low[symbol])
-                    else
-                        high[symbol] = tick.match
-                        low[symbol] = tick.match
-                    end
-                end
-                res = generate(datei, symbol, nowdt, tick, globalvar)
-                if isnothing(res)
-                else
-                    push!(lftmatchvec,lftmatch(high[symbol],low[symbol],tick.ask_price[1],
-                            tick.ask_vol[1],tick.bid_price[1],tick.bid_vol[1]))
-                    push!(lftdatavec,res)
+                
+                # 使用 BarBuilder.feed_tick!（内置时间过滤）
+                out = feed_tick!(bb, datei, symbol, nowdt, tick)
+                if out !== nothing
+                    bar, match = out
+                    push!(lftmatchvec, match)
+                    push!(lftdatavec, bar)
                     push!(symbols, symbol)
-                    push!(datetimes, nowdt)                    
-                    pop!(high,symbol)
-                    pop!(low,symbol)
+                    push!(datetimes, nowdt)
                 end
             end
         end
@@ -768,8 +1680,9 @@ function load_lftdata(dates::Vector{Date}, products::Vector{String}, generate::F
         end
         part_symbols = union(major_codes, pre_major_codes)
         if length(part_symbols) != 0
-            high = Dict{String,Int}()
-            low = Dict{String,Int}()
+            # 使用 BarBuilder 代替原有的 high/low 维护逻辑
+            bb = BarBuilder(generate, param_type())
+            
             if length(filesi) > 2
                 file_id_night = hdb_open_file(db_id, filesi[1], flags)[1]
                 if mode == 1
@@ -784,43 +1697,24 @@ function load_lftdata(dates::Vector{Date}, products::Vector{String}, generate::F
                 load_futureticks!(file_id, futureitems, futureticks, part_symbols, datei)
             end            
             psymbols = parse_symbols(futureitems)
-            globalvar = param_type()
             for j in eachindex(futureticks)
                 tick = futureticks[j]
                 symbol = psymbols[j]
                 nowdt = parse_datetime(futureitems[j])
-                dt = CTime(nowdt[2], tick.time)
-                if 210000000 > nowdt[2] > 150000000
-                    if abs(dt) > 3600
-                        continue
-                    end
-                else
-                    if abs(dt) > 60*3
-                        continue
-                    end                
-                end                 
+                
+                # 保存结算价
                 if tick.settle_price > 0
                     settleprice[symbol] = tick.settle_price
                 end
-                if tick.match != 0
-                    if symbol in keys(high)
-                        high[symbol] = max(tick.match, high[symbol])
-                        low[symbol] = min(tick.match, low[symbol])
-                    else
-                        high[symbol] = tick.match
-                        low[symbol] = tick.match
-                    end
-                end
-                res = generate(datei, symbol, nowdt, tick, globalvar)
-                if isnothing(res)
-                else
-                    push!(lftmatchvec,lftmatch(high[symbol],low[symbol],tick.ask_price[1],
-                            tick.ask_vol[1],tick.bid_price[1],tick.bid_vol[1]))
-                    push!(lftdatavec,res)
+                
+                # 使用 BarBuilder.feed_tick!（内置时间过滤）
+                out = feed_tick!(bb, datei, symbol, nowdt, tick)
+                if out !== nothing
+                    bar, match = out
+                    push!(lftmatchvec, match)
+                    push!(lftdatavec, bar)
                     push!(symbols, symbol)
-                    push!(datetimes, nowdt)                    
-                    pop!(high,symbol)
-                    pop!(low,symbol)
+                    push!(datetimes, nowdt)
                 end
             end
         end
@@ -883,11 +1777,11 @@ function load_lftdata_security(dates::Vector{Date}, codes::Vector{String}, gener
         part_symbols = Vector{String}()
         push!(part_symbols, keys(margin_ratio)...)
         if length(part_symbols) != 0
-            high = Dict{String,Int}()
-            low = Dict{String,Int}()
+            # 使用 BarBuilder 代替原有的 high/low 维护逻辑
+            bb = BarBuilder(generate, param_type())
+            
             load_securityticks!(file_id, futureitems, securityticks, part_symbols)
             psymbols = parse_symbols(futureitems)
-            globalvar = param_type()
             for j in eachindex(securityticks)
                 tick = securityticks[j]
                 symbol = psymbols[j]
@@ -895,25 +1789,16 @@ function load_lftdata_security(dates::Vector{Date}, codes::Vector{String}, gener
                 if tick.match > 0
                     settleprice[symbol] = tick.match
                 end
-                if tick.match != 0
-                    if symbol in keys(high)
-                        high[symbol] = max(tick.match, high[symbol])
-                        low[symbol] = min(tick.match, low[symbol])
-                    else
-                        high[symbol] = tick.match
-                        low[symbol] = tick.match
-                    end
-                end
-                res = generate(symbol, nowdt, tick, globalvar)
-                if isnothing(res)
-                else
-                    push!(lftmatchvec,lftmatch(high[symbol],low[symbol],tick.ask_price[1],
-                          tick.ask_vol[1],tick.bid_price[1],tick.bid_vol[1]))
-                    push!(lftdatavec,res)
+                # 使用 BarBuilder.feed_tick! 代替原有逻辑
+                # 注意：security 类型的 generate 函数不需要 tradeday 参数
+                # 使用 datei 作为 tradeday 参数传入
+                out = feed_tick!(bb, datei, symbol, nowdt, tick)
+                if out !== nothing
+                    bar, match = out
+                    push!(lftmatchvec, match)
+                    push!(lftdatavec, bar)
                     push!(symbols, symbol)
-                    push!(datetimes, nowdt)                    
-                    pop!(high,symbol)
-                    pop!(low,symbol)
+                    push!(datetimes, nowdt)
                 end
             end
         end
@@ -2050,7 +2935,11 @@ function run_with_params(strategy_name::String, params::String, external_data)
             continue
         end
         date = parse(Int, Dates.format(dates[i],"yyyymmdd"))
-        ordertrace_init!(sys_data, margin_ratio, price_tick, multiplier, settleprice, major_codes, date)
+        
+        # 【改造】使用新的日初始化接口（离线回测版本）
+        strategy_on_new_day!(sys_data, date, margin_ratio, price_tick, 
+                            multiplier, settleprice, major_codes)
+        
         for j in eachindex(symbols)
             symbol = symbols[j]
             nowdt = datetimes[j]
@@ -2080,8 +2969,10 @@ function run_with_params(strategy_name::String, params::String, external_data)
             sys_data.last_tick[symbol] = (lftmatchdata.ask_price, lftmatchdata.bid_price)
             on_futures_tick(date, symbol, nowdt, tickdata, external_data)
             ordertrace_setworstprice!(sys_data, symbol, lftmatchdata.high, lftmatchdata.low)
-        end       
-        ordertrace_reset(sys_data, date)
+        end
+        
+        # 【改造】使用新的日终接口
+        strategy_on_day_end!(sys_data, date)
     end
     strategy_summary = ordertrace_profit_return(sys_data)
     new_summary = Vector{Tuple}()
