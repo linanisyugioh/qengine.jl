@@ -7,7 +7,7 @@ using Statistics
 using Distributed
 using dolphindb
 using FinancialStruct:cFuturesTickData,cSecurityTickData
-using FinancialStruct:FuturesTick,SecurityTick,HDataItem,HCodeInfo,CodeInfo,
+using FinancialStruct:FuturesTick,SecurityTick,HDataItem,HCodeInfo,CodeInfo
 import FinancialStruct.FuturesTick as kline
 
 #holidayfile = "X:/hdb_data/download/holidayinfo.txt"
