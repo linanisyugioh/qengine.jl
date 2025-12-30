@@ -6,8 +6,8 @@ using StringEncodings
 using Statistics
 using Distributed
 using dolphindb
-using FinancialStruct
-using FinancialStruct:FuturesTick,SecurityTick,HDataItem,HCodeInfo,CodeInfo
+using FinancialStruct:cFuturesTickData,cSecurityTickData
+using FinancialStruct:FuturesTick,SecurityTick,HDataItem,HCodeInfo,CodeInfo,
 import FinancialStruct.FuturesTick as kline
 
 #holidayfile = "X:/hdb_data/download/holidayinfo.txt"
@@ -1543,7 +1543,7 @@ function sysparam(strategy_name::String, params::String)
     sysparam(strategy_name, params, last_tick, day_schedule_times, timepoint_index, 
     ordertrace_orderlist, ordertrace_last_orderitem, 
     ordertrace_retracement, ordertrace_last_netvalue, ordertrace_max_netvalue, 
-    ordertrace_margin_ratio, ordertrace_price_tick,ordertrace_multiplier, ordertrace_fee, 
+    ordertrace_margin_ratio, ordertrace_price_tick, ordertrace_multiplier, ordertrace_fee, 
     ordertrace_settleprice, ordertrace_major_codes, 0)
 end
 
@@ -2406,10 +2406,10 @@ function on_time_heartbeat(
         end
 
         # 1.2 获取当日合约参数（优先使用传入参数，否则使用前一交易日的值）
-        _margin_ratio = isnothing(margin_ratio) ? sys_data.ordertrace_margin_ratio : margin_ratio
-        _price_tick   = isnothing(price_tick)   ? sys_data.ordertrace_price_tick   : price_tick
-        _multiplier   = isnothing(multiplier)   ? sys_data.ordertrace_multiplier   : multiplier
-        _major_codes  = isnothing(major_codes)  ? sys_data.ordertrace_major_codes  : major_codes
+        _margin_ratio = isnothing(margin_ratio) ? sys_data.ordertrace_margin_ratio : copy(margin_ratio)
+        _price_tick   = isnothing(price_tick)   ? sys_data.ordertrace_price_tick   : copy(price_tick)
+        _multiplier   = isnothing(multiplier)   ? sys_data.ordertrace_multiplier   : copy(multiplier)
+        _major_codes  = isnothing(major_codes)  ? sys_data.ordertrace_major_codes  : copy(major_codes)
 
         # 在线模式下，结算价由 tick 数据逐步填充，这里传入空字典
         settleprice = Dict{String, Int}()
@@ -2552,6 +2552,45 @@ export on_time_heartbeat_multi
 
 function on_md_tick(
     tradeday::Int,
+    nowdt::NTuple{2,Int},
+    ftick::cFuturesTickData,
+    external_data,
+)
+    raw_tick = FuturesTick(
+        time = ftick.time,
+        status = ftick.status,
+        pre_open_interest = ftick.pre_open_interest,
+        pre_close = ftick.pre_close,
+        pre_settle_price = ftick.pre_settle_price,
+        open = ftick.open,
+        high = ftick.high,
+        low = ftick.low,
+        match = ftick.match,
+        volume = ftick.volume,
+        turnover = ftick.turnover,
+        open_interest = ftick.open_interest,
+        close = ftick.close,
+        settle_price = ftick.settle_price,
+        high_limited = ftick.high_limited,
+        low_limited = ftick.low_limited,
+        pre_delta = ftick.pre_delta,
+        curr_delta = ftick.curr_delta,
+        ask_price = ftick.ask_price,  # 确保类型匹配（如 Carray{Int64,5}）
+        ask_vol = ftick.ask_vol,
+        bid_price = ftick.bid_price,
+        bid_vol = ftick.bid_vol,
+        trading_status = UInt8(ftick.trading_status)  # 显式类型转换
+    )
+    symbol = unsafe_string(convert(Ptr{UInt8}, ftick.symbol))
+
+    # 适配到 FuturesTick 版本，复用核心逻辑
+    on_md_tick(tradeday, symbol, nowdt, raw_tick, external_data)
+
+    return nothing
+end
+
+function on_md_tick(
+    tradeday::Int,
     symbol::String,
     nowdt::NTuple{2,Int},
     raw_tick::FuturesTick,
@@ -2587,6 +2626,50 @@ function on_md_tick(
 
     # 5) 更新风控最差价
     ordertrace_setworstprice!(sys_data, symbol, match.high, match.low)
+
+    return nothing
+end
+
+function on_md_tick(
+    tradeday::Int,
+    nowdt::NTuple{2,Int},
+    stick::cSecurityTickData,
+    external_data,
+)
+    raw_tick = SecurityTick(
+        time                  = stick.time,
+        status                = stick.status,
+        pre_close             = stick.pre_close,
+        open                  = stick.open,
+        high                  = stick.high,
+        low                   = stick.low,
+        match                 = stick.match,
+        ask_price             = stick.ask_price,
+        ask_vol               = stick.ask_vol,
+        bid_price             = stick.bid_price,
+        bid_vol               = stick.bid_vol,
+        num_trades            = stick.num_trades,
+        volume                = stick.volume,
+        turnover              = stick.turnover,
+        total_bid_vol         = stick.total_bid_vol,
+        total_ask_vol         = stick.total_ask_vol,
+        weighted_avg_bid_price = stick.weighted_avg_bid_price,
+        weighted_avg_ask_price = stick.weighted_avg_ask_price,
+        iopv                  = stick.iopv,
+        yield_to_maturity     = stick.yield_to_maturity,
+        high_limited          = stick.high_limited,
+        low_limited           = stick.low_limited,
+        prefix                = stick.prefix,
+        syl1                  = stick.syl1,
+        syl2                  = stick.syl2,
+        sd2                   = stick.sd2,
+        trading_phase_code    = stick.trading_phase_code,
+        pre_iopv              = stick.pre_iopv,
+    )
+    symbol = unsafe_string(convert(Ptr{UInt8}, stick.symbol))
+
+    # 适配到 SecurityTick 核心版本，复用逻辑
+    on_md_tick(tradeday, symbol, nowdt, raw_tick, external_data)
 
     return nothing
 end
@@ -2678,6 +2761,46 @@ export on_md_tick
 # 期货版本
 function on_md_tick_multi(
     tradeday::Int,
+    nowdt::NTuple{2,Int},
+    ftick::cFuturesTickData,
+    external_datas::Vector,
+)
+    raw_tick = FuturesTick(
+        time             = ftick.time,
+        status           = ftick.status,
+        pre_open_interest = ftick.pre_open_interest,
+        pre_close        = ftick.pre_close,
+        pre_settle_price = ftick.pre_settle_price,
+        open             = ftick.open,
+        high             = ftick.high,
+        low              = ftick.low,
+        match            = ftick.match,
+        volume           = ftick.volume,
+        turnover         = ftick.turnover,
+        open_interest    = ftick.open_interest,
+        close            = ftick.close,
+        settle_price     = ftick.settle_price,
+        high_limited     = ftick.high_limited,
+        low_limited      = ftick.low_limited,
+        pre_delta        = ftick.pre_delta,
+        curr_delta       = ftick.curr_delta,
+        ask_price        = ftick.ask_price,
+        ask_vol          = ftick.ask_vol,
+        bid_price        = ftick.bid_price,
+        bid_vol          = ftick.bid_vol,
+        trading_status   = UInt8(ftick.trading_status),
+    )
+    symbol = unsafe_string(convert(Ptr{UInt8}, ftick.symbol))
+
+    # 适配到 FuturesTick 多实例版本
+    on_md_tick_multi(tradeday, symbol, nowdt, raw_tick, external_datas)
+
+    return nothing
+end
+
+# 期货版本
+function on_md_tick_multi(
+    tradeday::Int,
     symbol::String,
     nowdt::NTuple{2,Int},
     tick::FuturesTick,
@@ -2727,6 +2850,51 @@ function on_md_tick_multi(
         end
     end
     
+    return nothing
+end
+
+# 证券版本
+function on_md_tick_multi(
+    tradeday::Int,
+    nowdt::NTuple{2,Int},
+    stick::cSecurityTickData,
+    external_datas::Vector,
+)
+    raw_tick = SecurityTick(
+        time                  = stick.time,
+        status                = stick.status,
+        pre_close             = stick.pre_close,
+        open                  = stick.open,
+        high                  = stick.high,
+        low                   = stick.low,
+        match                 = stick.match,
+        ask_price             = stick.ask_price,
+        ask_vol               = stick.ask_vol,
+        bid_price             = stick.bid_price,
+        bid_vol               = stick.bid_vol,
+        num_trades            = stick.num_trades,
+        volume                = stick.volume,
+        turnover              = stick.turnover,
+        total_bid_vol         = stick.total_bid_vol,
+        total_ask_vol         = stick.total_ask_vol,
+        weighted_avg_bid_price = stick.weighted_avg_bid_price,
+        weighted_avg_ask_price = stick.weighted_avg_ask_price,
+        iopv                  = stick.iopv,
+        yield_to_maturity     = stick.yield_to_maturity,
+        high_limited          = stick.high_limited,
+        low_limited           = stick.low_limited,
+        prefix                = stick.prefix,
+        syl1                  = stick.syl1,
+        syl2                  = stick.syl2,
+        sd2                   = stick.sd2,
+        trading_phase_code    = stick.trading_phase_code,
+        pre_iopv              = stick.pre_iopv,
+    )
+    symbol = unsafe_string(convert(Ptr{UInt8}, stick.symbol))
+
+    # 适配到 SecurityTick 多实例版本
+    on_md_tick_multi(tradeday, symbol, nowdt, raw_tick, external_datas)
+
     return nothing
 end
 
