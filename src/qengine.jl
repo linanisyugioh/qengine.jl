@@ -6,6 +6,7 @@ using StringEncodings
 using Statistics
 using Distributed
 using dolphindb
+import FinancialStruct
 using FinancialStruct:cFuturesTickData,cSecurityTickData
 using FinancialStruct:FuturesTick,SecurityTick,HDataItem,HCodeInfo,CodeInfo
 import FinancialStruct.FuturesTick as kline
