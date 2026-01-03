@@ -1369,7 +1369,7 @@ feed_tick!(bb::BarBuilder, tradeday::Int, symbol::String, nowdt::NTuple{2,Int}, 
 """
 # 期货版本：调用5参数生成函数
 function feed_tick!(bb::BarBuilder, tradeday::Int, symbol::String, 
-                    nowdt::NTuple{2,Int}, tick::FuturesTick)
+                    nowdt::NTuple{2,Integer}, tick::FuturesTick)
     # 1) 时间过滤：检查 tick 时间与系统时间的偏差
     dt = CTime(nowdt[2], tick.time)
     if 210000000 > nowdt[2] > 150000000
@@ -1421,7 +1421,7 @@ end
 
 # 证券版本：调用4参数生成函数
 function feed_tick!(bb::BarBuilder, tradeday::Int, symbol::String, 
-                    nowdt::NTuple{2,Int}, tick::SecurityTick)
+                    nowdt::NTuple{2,Integer}, tick::SecurityTick)
     # 1) 时间过滤：检查 tick 时间与系统时间的偏差
     # 证券交易只有日盘，允许最大偏差 180 秒
     dt = CTime(nowdt[2], tick.time)
