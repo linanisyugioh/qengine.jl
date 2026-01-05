@@ -2413,7 +2413,7 @@ function on_time_heartbeat(
         _major_codes  = isnothing(major_codes)  ? sys_data.ordertrace_major_codes  : copy(major_codes)
 
         # 在线模式下，结算价由 tick 数据逐步填充，这里传入空字典
-        settleprice = Dict{String, Int}()
+        settleprice = Dict{String, Integer}()
 
         # 1.3 新交易日初始化（内部会设置 sys_data.ordertrace_tradeday = tradeday）
         strategy_on_new_day!(
@@ -2490,8 +2490,8 @@ export on_time_heartbeat
     end
 """
 function on_time_heartbeat_multi(
-    tradeday::Int,
-    current_time::Int,
+    tradeday::Integer,
+    current_time::Integer,
     external_datas::Vector;
     margin_ratio::Union{Dict{String,NTuple{2,Integer}},Nothing} = nothing,
     price_tick::Union{Dict{String,Integer},Nothing} = nothing,
