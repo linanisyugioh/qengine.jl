@@ -2761,8 +2761,8 @@ export on_md_tick
 """
 # 期货版本
 function on_md_tick_multi(
-    tradeday::Int,
-    nowdt::NTuple{2,Int},
+    tradeday::Integer,
+    nowdt::NTuple{2,Integer},
     ftick::cFuturesTickData,
     external_datas::Vector,
 )
@@ -2801,9 +2801,9 @@ end
 
 # 期货版本
 function on_md_tick_multi(
-    tradeday::Int,
+    tradeday::Integer,
     symbol::String,
-    nowdt::NTuple{2,Int},
+    nowdt::NTuple{2,Integer},
     tick::FuturesTick,
     external_datas::Vector
 )
@@ -2856,8 +2856,8 @@ end
 
 # 证券版本
 function on_md_tick_multi(
-    tradeday::Int,
-    nowdt::NTuple{2,Int},
+    tradeday::Integer,
+    nowdt::NTuple{2,Integer},
     stick::cSecurityTickData,
     external_datas::Vector,
 )
@@ -2901,9 +2901,9 @@ end
 
 # 证券版本
 function on_md_tick_multi(
-    tradeday::Int,
+    tradeday::Integer,
     symbol::String,
-    nowdt::NTuple{2,Int},
+    nowdt::NTuple{2,Integer},
     tick::SecurityTick,
     external_datas::Vector
 )
