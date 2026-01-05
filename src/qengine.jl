@@ -2791,7 +2791,7 @@ function on_md_tick_multi(
         bid_vol          = ftick.bid_vol,
         trading_status   = UInt8(ftick.trading_status),
     )
-    symbol = unsafe_string(convert(Ptr{UInt8}, ftick.symbol))
+    symbol = unsafe_string(pointer(UInt8[ftick.symbol...]))
 
     # 适配到 FuturesTick 多实例版本
     on_md_tick_multi(tradeday, symbol, nowdt, raw_tick, external_datas)
