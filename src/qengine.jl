@@ -2553,6 +2553,7 @@ export on_time_heartbeat_multi
 
 function on_md_tick(
     tradeday::Integer,
+    symbol::String,
     nowdt::NTuple{2,Integer},
     ftick::cFuturesTickData,
     external_data,
@@ -2582,7 +2583,7 @@ function on_md_tick(
         bid_vol = ftick.bid_vol,
         trading_status = UInt8(ftick.trading_status)  # 显式类型转换
     )
-    symbol = unsafe_string(convert(Ptr{UInt8}, ftick.symbol))
+#    symbol = unsafe_string(convert(Ptr{UInt8}, ftick.symbol))
 
     # 适配到 FuturesTick 版本，复用核心逻辑
     on_md_tick(tradeday, symbol, nowdt, raw_tick, external_data)
@@ -2633,6 +2634,7 @@ end
 
 function on_md_tick(
     tradeday::Integer,
+    symbol::String,
     nowdt::NTuple{2,Integer},
     stick::cSecurityTickData,
     external_data,
@@ -2667,7 +2669,7 @@ function on_md_tick(
         trading_phase_code    = stick.trading_phase_code,
         pre_iopv              = stick.pre_iopv,
     )
-    symbol = unsafe_string(pointer(UInt8[stick.symbol...]))
+#    symbol = unsafe_string(pointer(UInt8[stick.symbol...]))
 
     # 适配到 SecurityTick 核心版本，复用逻辑
     on_md_tick(tradeday, symbol, nowdt, raw_tick, external_data)
@@ -2762,6 +2764,7 @@ export on_md_tick
 # 期货版本
 function on_md_tick_multi(
     tradeday::Integer,
+    symbol::String,
     nowdt::NTuple{2,Integer},
     ftick::cFuturesTickData,
     external_datas::Vector,
@@ -2791,7 +2794,7 @@ function on_md_tick_multi(
         bid_vol          = ftick.bid_vol,
         trading_status   = UInt8(ftick.trading_status),
     )
-    symbol = unsafe_string(pointer(UInt8[ftick.symbol...]))
+#    symbol = unsafe_string(pointer(UInt8[ftick.symbol...]))
 
     # 适配到 FuturesTick 多实例版本
     on_md_tick_multi(tradeday, symbol, nowdt, raw_tick, external_datas)
@@ -2857,9 +2860,10 @@ end
 # 证券版本
 function on_md_tick_multi(
     tradeday::Integer,
+    symbol::String,
     nowdt::NTuple{2,Integer},
     stick::cSecurityTickData,
-    external_datas::Vector,
+    external_datas::Vector
 )
     raw_tick = SecurityTick(
         time                  = stick.time,
@@ -2891,8 +2895,6 @@ function on_md_tick_multi(
         trading_phase_code    = stick.trading_phase_code,
         pre_iopv              = stick.pre_iopv,
     )
-    symbol = unsafe_string(convert(Ptr{UInt8}, stick.symbol))
-
     # 适配到 SecurityTick 多实例版本
     on_md_tick_multi(tradeday, symbol, nowdt, raw_tick, external_datas)
 
