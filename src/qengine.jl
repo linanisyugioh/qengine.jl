@@ -2552,8 +2552,8 @@ export on_time_heartbeat_multi
 # 注意：从 v3.0 起，qengine 同时提供了内置的 on_md_tick 实现，用户可直接调用。
 
 function on_md_tick(
-    tradeday::Int,
-    nowdt::NTuple{2,Int},
+    tradeday::Integer,
+    nowdt::NTuple{2,Integer},
     ftick::cFuturesTickData,
     external_data,
 )
@@ -2591,9 +2591,9 @@ function on_md_tick(
 end
 
 function on_md_tick(
-    tradeday::Int,
+    tradeday::Integer,
     symbol::String,
-    nowdt::NTuple{2,Int},
+    nowdt::NTuple{2,Integer},
     raw_tick::FuturesTick,
     external_data,
 )
@@ -2632,8 +2632,8 @@ function on_md_tick(
 end
 
 function on_md_tick(
-    tradeday::Int,
-    nowdt::NTuple{2,Int},
+    tradeday::Integer,
+    nowdt::NTuple{2,Integer},
     stick::cSecurityTickData,
     external_data,
 )
@@ -2667,7 +2667,7 @@ function on_md_tick(
         trading_phase_code    = stick.trading_phase_code,
         pre_iopv              = stick.pre_iopv,
     )
-    symbol = unsafe_string(convert(Ptr{UInt8}, stick.symbol))
+    symbol = unsafe_string(pointer(UInt8[stick.symbol...]))
 
     # 适配到 SecurityTick 核心版本，复用逻辑
     on_md_tick(tradeday, symbol, nowdt, raw_tick, external_data)
@@ -2676,9 +2676,9 @@ function on_md_tick(
 end
 
 function on_md_tick(
-    tradeday::Int,
+    tradeday::Integer,
     symbol::String,
-    nowdt::NTuple{2,Int},
+    nowdt::NTuple{2,Integer},
     raw_tick::SecurityTick,
     external_data,
 )
