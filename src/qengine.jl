@@ -2153,7 +2153,7 @@ strategy_on_new_day!(sys_data, date, margin_ratio, price_tick, multiplier, settl
 """
 function strategy_on_new_day!(
     sys_data::sysparam,
-    date::Int,
+    date::Integer,
     margin_ratio::Dict{String,NTuple{2,Integer}},
     price_tick::Dict{String,Integer},
     multiplier::Dict{String,Integer},
@@ -2389,13 +2389,13 @@ export init_online_simulation, reset_global_barbuilder!
 # on_time_heartbeat 由 qengine 实现并导出，用户直接调用即可
 
 function on_time_heartbeat(
-    tradeday::Int,
-    current_time::Int,
+    tradeday::Integer,
+    current_time::Integer,
     external_data;
-    margin_ratio::Union{Dict,Nothing} = nothing,
-    price_tick::Union{Dict,Nothing} = nothing,
-    multiplier::Union{Dict,Nothing} = nothing,
-    major_codes::Union{Vector,Nothing} = nothing
+    margin_ratio::Union{Dict{String,NTuple{2,Integer}},Nothing} = nothing,
+    price_tick::Union{Dict{String,Integer},Nothing} = nothing,
+    multiplier::Union{Dict{String,Integer},Nothing} = nothing,
+    major_codes::Union{Vector{String},Nothing} = nothing
 )
     sys_data = external_data.sys_data
 
@@ -2493,10 +2493,10 @@ function on_time_heartbeat_multi(
     tradeday::Int,
     current_time::Int,
     external_datas::Vector;
-    margin_ratio::Union{Dict,Nothing} = nothing,
-    price_tick::Union{Dict,Nothing} = nothing,
-    multiplier::Union{Dict,Nothing} = nothing,
-    major_codes::Union{Vector,Nothing} = nothing
+    margin_ratio::Union{Dict{String,NTuple{2,Integer}},Nothing} = nothing,
+    price_tick::Union{Dict{String,Integer},Nothing} = nothing,
+    multiplier::Union{Dict{String,Integer},Nothing} = nothing,
+    major_codes::Union{Vector{String},Nothing} = nothing
 )
     # 为每个实例调用单实例版本的 on_time_heartbeat
     # 注意：所有实例共享同一套参数
