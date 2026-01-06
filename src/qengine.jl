@@ -154,7 +154,7 @@ function FinancialStruct.FuturesTick(ftick::FuturesTick, kopen::Int64, khigh::In
         ask_vol = ftick.ask_vol,
         bid_price = ftick.bid_price,
         bid_vol = ftick.bid_vol,
-        trading_status = UInt8(ftick.trading_status)  # 显式类型转换
+        trading_status = ftick.trading_status  # 显式类型转换
     )        
 end
 export kline
@@ -192,7 +192,7 @@ function FinancialStruct.FuturesTick(tickdata::SecurityTick, kopen::Int64, khigh
         ask_vol = Carray{UInt32, 5}(tickdata.ask_vol...),
         bid_price = Carray{Int64, 5}(tickdata.bid_price...),
         bid_vol = Carray{UInt32, 5}(tickdata.bid_vol...),
-        trading_status = UInt8(tickdata.trading_status)  # 显式类型转换
+        trading_status = Int8(0)  # 显式类型转换
     )         
 end
 export kline
@@ -2581,7 +2581,7 @@ function on_md_tick(
         ask_vol = ftick.ask_vol,
         bid_price = ftick.bid_price,
         bid_vol = ftick.bid_vol,
-        trading_status = UInt8(ftick.trading_status)  # 显式类型转换
+        trading_status = ftick.trading_status  # 显式类型转换
     )
 #    symbol = unsafe_string(convert(Ptr{UInt8}, ftick.symbol))
 
@@ -2792,7 +2792,7 @@ function on_md_tick_multi(
         ask_vol          = ftick.ask_vol,
         bid_price        = ftick.bid_price,
         bid_vol          = ftick.bid_vol,
-        trading_status   = UInt8(ftick.trading_status),
+        trading_status   = ftick.trading_status,
     )
 #    symbol = unsafe_string(pointer(UInt8[ftick.symbol...]))
 
