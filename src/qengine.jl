@@ -2184,7 +2184,7 @@ strategy_on_day_end!(sys_data, date)
 示例：
     strategy_on_day_end!(sys_data, 20250101)
 """
-function strategy_on_day_end!(sys_data::sysparam, date::Int)
+function strategy_on_day_end!(sys_data::sysparam, date::Integer)
     ordertrace_reset(sys_data, date)
     return nothing
 end
